@@ -1,205 +1,211 @@
-# Real-Time Emoji Streaming API
 
-A scalable and fault-tolerant system for ingesting, buffering, and processing emoji reactions in real-time using **Flask**, **Kafka**, and **Spark Structured Streaming**.
+# 🧠 Real-Time Emoji Reaction Aggregator with Kafka & Spark Streaming
 
-## Overview
+This project implements a **real-time emoji reaction analytics pipeline** using **Apache Spark Structured Streaming** and **Apache Kafka**.  
+It demonstrates how live emoji reactions (e.g., from social media or chat platforms) can be **aggregated, scaled, and distributed** efficiently across **multiple Kafka clusters and subscribers**.
 
-This project simulates a real-time emoji reaction system where multiple clients send emoji reactions to a central API. The API buffers these reactions and forwards them to a Kafka topic. Spark Structured Streaming processes these reactions with window-based aggregations and logs results.
+---
 
-Use cases include:
-- Live event reactions
-- Social media engagement tracking
-- Real-time analytics dashboards
+## 🚀 Overview
 
-## Architecture
+The system captures emoji reactions in real time, aggregates them into 2-second time windows, scales the reaction counts, and publishes the results to multiple **Kafka clusters** and **subscriber subtopics** for downstream processing, visualization, or alerting.
 
-### High-Level Design (HLD)
+The architecture follows a **pub/sub model**, where Spark acts as the **stream processor** and Kafka provides **data distribution and fault tolerance**.
 
-```
-[Clients] --> [Flask API] --> [Kafka Topic] --> [Spark Streaming Processor] --> [Console Logs / Downstream Systems]
-```
+---
 
-- **Clients**: Simulated using `emoji_client_simulator.py`. Multiple threads send emoji reactions to the Flask API.
-- **Flask API** (`app.py`): Receives emoji reactions, validates and buffers them, and sends them to a Kafka topic.
-- **Kafka**: Acts as a durable and scalable message broker.
-- **Spark Structured Streaming** (`emoji_streaming_processor2.py`): Reads messages from Kafka, parses them, performs windowed aggregations, and outputs reaction counts.
+## 🧩 Architecture
 
-### Low-Level Design (LLD)
 
-#### Data Flow
 
-1. **Emoji Client Simulation**
-   - Generates random emoji data with:
-     - `user_id`: UUID
-     - `emoji_type`: Random emoji
-     - `timestamp`: Current UTC timestamp
-   - Sends data as JSON to the Flask API endpoint `/emoji`.
+[Emoji Producer]
+↓
+[Kafka Topic: emoji_reactions]
+↓
+[Spark Structured Streaming]
+├─ Aggregates reactions (2-sec window)
+├─ Scales counts
+↓
+[EmojiPubSubManager]
+├─ Publishes to main topic (emoji_main_publisher)
+├─ Distributes to clusters:
+│   ├─ emoji_cluster_1 / sub1, sub2, sub3
+│   ├─ emoji_cluster_2 / sub1, sub2, sub3
+│   └─ emoji_cluster_3 / sub1, sub2, sub3
+↓
+[Subscribers]
+├─ Dashboards
+├─ Data warehouses
+└─ Notification systems
 
-2. **Flask API**
-   - Receives incoming requests and validates required fields.
-   - Uses a global in-memory buffer with thread locks to store emoji data temporarily.
-   - Periodically flushes buffered data to Kafka using a separate thread.
-   - Exposes `/health` and `/` endpoints for status checks.
 
-3. **Kafka**
-   - Topic: `emoji_reactions`
-   - Handles buffering, scalability, and reliability.
 
-4. **Spark Structured Streaming**
-   - Reads messages from Kafka in real-time.
-   - Parses JSON into structured format.
-   - Aggregates reactions over 2-second windows.
-   - Outputs results with reaction counts and scaling logic.
+---
 
-#### Component Breakdown
+## ⚙️ Components
 
-| Component             | Key Functions |
-|----------------------|----------------|
-| Flask API            | Receives emoji data, validates, buffers, and sends to Kafka |
-| Buffer Manager       | Uses locks to safely add and flush data to Kafka |
-| Kafka Producer       | Sends messages reliably with retry mechanisms |
-| Kafka Topic          | Stores incoming emoji messages |
-| Spark Structured Streaming | Reads from Kafka, aggregates, processes data in micro-batches |
-| Clients              | Generate traffic and simulate real-time usage |
+### 1️⃣ `pubsub.py`
+Implements the **Pub/Sub manager** and the **Spark streaming job**:
+- Reads raw reactions from Kafka (`emoji_reactions`)
+- Aggregates emoji counts in **2-second time windows**
+- Scales reaction counts dynamically
+- Publishes aggregated results to:
+  - A main topic (`emoji_main_publisher`)
+  - Multiple cluster topics (`emoji_cluster_1`, `emoji_cluster_2`, `emoji_cluster_3`)
+  - Subtopics under each cluster (for fan-out distribution)
+- Starts background subscribers for each cluster/subtopic
 
-#### Data Schema
+### 2️⃣ `emoji_streaming_processor2.py`
+A simplified version used for **testing and debugging the aggregation logic** without Kafka publishing:
+- Performs the same streaming aggregation
+- Prints micro-batch outputs directly to the console
 
-```json
-{
-  "user_id": "string",
-  "emoji_type": "string",
-  "timestamp": "string (ISO8601)"
-}
-```
+---
 
-#### Configuration Variables
+## 🧮 Aggregation Logic
 
-| Variable                | Default Value | Description |
-|------------------------|---------------|-------------|
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka server address |
-| `EMOJI_TOPIC`           | `emoji_reactions` | Kafka topic name |
-| `BUFFER_FLUSH_INTERVAL` | `0.5` seconds | Interval to flush the buffer |
-| `NUM_CLIENTS`           | `10` | Number of simulated clients |
-| `EMOJIS_PER_CLIENT`    | `1000` | Number of emoji messages per client |
+Emoji reactions are grouped into **2-second windows** and aggregated:
 
-## Technologies Used
+| Window Interval | Operation | Description |
+|------------------|------------|--------------|
+| `window(event_time, "2 seconds")` | Grouping | Groups reactions by emoji type and time window |
+| `count(user_id)` | Aggregation | Counts total reactions per emoji |
+| `scaled_reactions` | Scaling | Applies scaling rules for large counts |
 
-- **Python 3.x**
-- **Flask**
-- **Kafka**
-- **Spark Structured Streaming**
-- **Requests**
-- **Threading**
-- **JSON**
+### Scaling Rules:
+python
+when(col("reaction_count") <= 50, lit(1))
+.when(col("reaction_count") <= 1000, lit(1))
+.otherwise(col("reaction_count"))
 
-## Setup Instructions
 
-### Prerequisites
 
-- Install Java (required by Kafka and Spark)
-- Install Python packages:
-  ```bash
-  pip install flask kafka-python requests pyspark python-dateutil
-  ```
-- Kafka & Zookeeper installed and running locally
 
-### Kafka Setup
+## 🧠 Why Clusters After Aggregation?
 
-1. Start Zookeeper:
-   ```bash
-   zookeeper-server-start.sh config/zookeeper.properties
-   ```
+Even though data is aggregated upstream by Spark, Kafka clusters and subtopics remain crucial for:
 
-2. Start Kafka broker:
-   ```bash
-   kafka-server-start.sh config/server.properties
-   ```
+* **Distribution** of aggregated results to multiple consumers
+* **Fault tolerance** and decoupling of producers/consumers
+* **Multi-region or multi-tenant delivery**
+* **Post-aggregation processing** (e.g., enrichment, anomaly detection)
+* **Data replay** for late subscribers
 
-3. Create the topic:
-   ```bash
-   kafka-topics.sh --create --topic emoji_reactions --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1
-   ```
+This architecture ensures **scalability and resilience** across multiple downstream systems.
 
-### Run Flask API
+---
 
-```bash
-python app.py
-```
+## 🛠️ Setup Instructions
 
-### Run Emoji Client Simulator
+### 1️⃣ Prerequisites
 
-```bash
-python emoji_client_simulator.py
-```
+* Python 3.8+
+* Apache Kafka running on `localhost:9092`
+* Apache Spark 3.1.2+ with Kafka connector
+* Java 8 or 11
 
-### Run Spark Streaming Processor
+### 2️⃣ Install Dependencies
 
-```bash
+bash
+pip install confluent-kafka pyspark
+
+
+### 3️⃣ Start Kafka
+
+Make sure Kafka and Zookeeper are running:
+
+bash
+zookeeper-server-start.sh config/zookeeper.properties
+kafka-server-start.sh config/server.properties
+
+Create required topics:
+
+bash
+kafka-topics.sh --create --topic emoji_reactions --bootstrap-server localhost:9092
+kafka-topics.sh --create --topic emoji_main_publisher --bootstrap-server localhost:9092
+kafka-topics.sh --create --topic emoji_cluster_1 --bootstrap-server localhost:9092
+kafka-topics.sh --create --topic emoji_cluster_2 --bootstrap-server localhost:9092
+kafka-topics.sh --create --topic emoji_cluster_3 --bootstrap-server localhost:9092
+
+### 4️⃣ Run the Application
+
+Run the main streaming app:
+
+bash
+python pubsub.py
+
+(Optional) Run the simpler version for debugging:
+
+bash
 python emoji_streaming_processor2.py
-```
 
-## API Endpoints
 
-### GET `/`
+---
 
-Returns service information.
+## 🧪 Example Input
 
-### POST `/emoji`
-
-Accepts emoji reaction data.
-
-**Request JSON Format:**
-```json
+json
 {
-  "user_id": "string",
-  "emoji_type": "string",
-  "timestamp": "string (ISO8601 format)"
+  "user_id": "user123",
+  "emoji_type": "❤️",
+  "timestamp": "2025-10-29T22:31:00"
 }
-```
 
-**Response:**
-```json
+
+---
+
+## 📊 Example Aggregated Output
+
+json
 {
-  "status": "Emoji received",
-  "message_id": "UUID"
+  "window_start": "2025-10-29T22:31:00",
+  "window_end": "2025-10-29T22:31:02",
+  "emoji": "❤️",
+  "reaction_count": 120,
+  "scaled_reactions": 120
 }
-```
 
-### GET `/health`
 
-Returns system health, Kafka connection status, and buffer size.
+---
 
-## Configuration
+## 🧱 Future Improvements
 
-You can configure the application using environment variables:
+* Add a real-time dashboard using WebSocket or Plotly Dash
+* Implement fault-tolerant subscriber checkpointing
+* Integrate sentiment analysis with emoji trends
+* Store aggregates in Cassandra or PostgreSQL for long-term analysis
 
-```bash
-export KAFKA_BOOTSTRAP_SERVERS="localhost:9092"
-export EMOJI_TOPIC="emoji_reactions"
-export BUFFER_FLUSH_INTERVAL="0.5"
-```
+---
 
-## Future Improvements
+## 👨‍💻 Authors
 
-- ✅ Add authentication & rate limiting
-- ✅ Use a persistent database for buffer overflow scenarios
-- ✅ Add monitoring and alerting with Prometheus and Grafana
-- ✅ Implement retries with exponential backoff in Kafka producers
-- ✅ Containerize using Docker and Docker Compose
-- ✅ Add unit tests and integration tests
-- ✅ Secure Kafka with SSL/SASL
+**Vedant Singh**
+PES University, Electronic City
+*Streaming Systems | Kafka | Spark | Real-Time Analytics*
 
-## Folder Structure
+---
 
-```
-.
-├── app.py
-├── emoji_client_simulator.py
-├── emoji_streaming_processor2.py
-├── README.md
-├── requirements.txt
-```
+## 🪪 License
 
-## License
+This project is licensed under the **MIT License** – feel free to modify and use it for educational or research purposes.
 
-MIT License © 2025
+---
+
+## 🌟 Acknowledgements
+
+* [Apache Spark Structured Streaming](https://spark.apache.org/docs/latest/structured-streaming-programming-guide.html)
+* [Apache Kafka](https://kafka.apache.org/)
+* [Confluent Kafka Python Client](https://github.com/confluentinc/confluent-kafka-python)
+
+---
+
+### ✨ “Aggregate once, distribute infinitely.”
+
+Real-time systems are not about computing *faster*, but about **delivering smarter**.
+
+
+
+---
+
+Would you like me to make a **shorter GitHub-style version** (around 1/3 the length) — suitable for your repository’s main page while keeping this detailed one as `docs/README_full.md`?
+
